@@ -1,0 +1,63 @@
+{
+  "schema_version": "mncs.learn-boundary/1",
+  "repository": "mncs-learn",
+  "boundary": "mncs-learn-machine-native-boundary",
+  "thesis": "Learning is evidence-governed state transition across heterogeneous computational state.",
+  "owns": [
+    "learning eligibility",
+    "operator selection semantics",
+    "adaptation proposals",
+    "fitness and evaluation",
+    "commit policy semantics",
+    "consolidation semantics",
+    "structural learning semantics",
+    "plasticity semantics"
+  ],
+  "does_not_own": [
+    "raw source parsing",
+    "persistent graph storage",
+    "universal optimizer implementation",
+    "worker placement",
+    "all learning backends"
+  ],
+  "mutation_scopes": [
+    "internal",
+    "relationship",
+    "topology",
+    "routing"
+  ],
+  "timescales": [
+    "fast",
+    "consolidation",
+    "evolution"
+  ],
+  "decisions": [
+    "commit",
+    "reject",
+    "defer"
+  ],
+  "invariants": [
+    "no universal train method is required",
+    "observations do not directly mutate durable target state",
+    "durable changes are represented by adaptation proposals",
+    "rights can prohibit learning independently of observation visibility",
+    "fitness may be multidimensional",
+    "topology and routing changes use the governed learning lifecycle",
+    "no_learning is a valid learning outcome",
+    "bootstrap host-language artifacts are not normative MNCS runtime semantics"
+  ],
+  "family_interfaces": {
+    "mncs-ingest": "typed observations and evidence",
+    "mncs-memory": "persistent model and graph state with revisions",
+    "MNEL": "optional concrete learning mechanisms/backends",
+    "mncs-language": "native expression and runtime target",
+    "mncs-actions": "conformance and evidence",
+    "mncs-fabric": "heterogeneous execution placement"
+  },
+  "bootstrap": {
+    "contract_schema": "spec/mncs-learn-v0.schema.json",
+    "reference_runtime": "src/mncs_learn/reference.py",
+    "operator_catalog": "src/mncs_learn/operators.py",
+    "conformance_check": "scripts/mncs_learn_check.py"
+  }
+}

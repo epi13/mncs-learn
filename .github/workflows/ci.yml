@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Run reference lifecycle tests
+        env:
+          PYTHONPATH: src
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Produce local MNCS check evidence
+        run: >-
+          python3 scripts/mncs_learn_check.py
+          --result-file .mncs/checks/learn-contract-tests.json
+          --revision ${{ github.sha }}
+
+      - name: Require PASS verdict
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('.mncs/checks/learn-contract-tests.json').read_text())
+          assert result['verdict'] == 'PASS', result
+          print(result['summary'])
+          PY
