@@ -1,0 +1,70 @@
+name: MNCS family
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  mncs:
+    uses: epi13/mncs-actions/.github/workflows/mncs-family-verify.yml@9eb2a0d6144807edbd38b369941deb1b4014e5ff
+    with:
+      required-checks: 'learn-contract-tests'
+      boundary: mncs-learn-machine-native-boundary
+      fail-on-unknown: true
+      project-check-id: learn-contract-tests
+      project-provider: mncs-learn-bootstrap
+      project-command: >-
+        python3 scripts/mncs_learn_check.py --result-file
+        .mncs/checks/learn-contract-tests.json --revision ${{ github.sha }}
+      project-result-file: .mncs/checks/learn-contract-tests.json
+      project-evidence-dir: .mncs/evidence-learn
+      aggregate-evidence-dir: .mncs/aggregate-evidence
+      badge-label: mncs-learn
+      badge-file: docs/mncs-badge.svg
+      badge-sidecar-file: docs/mncs-badge.json
+      carrier-revision: 9eb2a0d6144807edbd38b369941deb1b4014e5ff
+      upload-artifacts: true
+
+  publish-badge:
+    needs: mncs
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tested revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: true
+
+      - name: Render committed MNCS badge
+        uses: epi13/mncs-actions/actions/render-badge@9eb2a0d6144807edbd38b369941deb1b4014e5ff
+        with:
+          verdict: ${{ needs.mncs.outputs.verdict || 'INVALID' }}
+          label: mncs-learn
+          output-file: docs/mncs-badge.svg
+          sidecar-file: docs/mncs-badge.json
+          repository: ${{ github.repository }}
+          subject-commit: ${{ github.sha }}
+          boundary: mncs-learn-machine-native-boundary
+          aggregate-digest: ${{ needs.mncs.outputs['aggregate-digest'] }}
+          manifest-digest: ${{ needs.mncs.outputs['manifest-digest'] }}
+          carrier-revision: 9eb2a0d6144807edbd38b369941deb1b4014e5ff
+
+      - name: Commit refreshed badge
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/mncs-badge.svg docs/mncs-badge.json
+          if git diff --cached --quiet; then
+            echo 'Badge is already current.'
+            exit 0
+          fi
+          git commit -m 'chore: refresh MNCS learn badge'
+          git push origin HEAD:main

@@ -1,0 +1,169 @@
+{
+  "scenario": "fox crosses frozen river",
+  "note": "Illustrative bootstrap scenario showing one observation feeding heterogeneous learners through proposals rather than direct mutation.",
+  "learning_event": {
+    "schema": "mncs.learn/0",
+    "kind": "learning_event",
+    "id": "event:fox-river-001",
+    "observation": {
+      "id": "obs:fox-river-001",
+      "kind": "semantic",
+      "data_type": "language/semantic-graph",
+      "payload": {
+        "entities": [
+          { "id": "entity:fox", "class": "animal", "properties": { "color": "red" } },
+          { "id": "entity:river", "class": "watercourse", "state": "frozen" }
+        ],
+        "relation": { "subject": "entity:fox", "predicate": "crossed", "object": "entity:river" },
+        "tense": "past"
+      },
+      "provenance": {
+        "source": "example:user-observation",
+        "producer": "mncs-ingest-example",
+        "revision": "example-1"
+      },
+      "confidence": 0.97,
+      "rights": {
+        "inspect": true,
+        "reason": true,
+        "learn": true,
+        "retain": true,
+        "propagate": true
+      },
+      "observed_at": "2026-09-06T22:00:00Z"
+    },
+    "targets": ["model:fox-prototype", "model:world-graph"],
+    "desired_effects": ["associate", "generalize"],
+    "context": { "domain": "world-model" },
+    "signals": { "novelty": 0.61, "contradiction": 0.02, "redundancy": 0.14 }
+  },
+  "capabilities": [
+    {
+      "schema": "mncs.learn/0",
+      "kind": "learnable_capability",
+      "id": "cap:model:fox-prototype",
+      "model_id": "model:fox-prototype",
+      "model_class": "semantic-prototype",
+      "accepts": ["semantic", "language/semantic-graph"],
+      "operators": ["prototype_update", "no_learning"],
+      "mutation_scopes": ["internal"],
+      "timescales": ["fast", "consolidation"],
+      "evaluation_dimensions": ["semantic_consistency", "discrimination"],
+      "plasticity": {
+        "current": 0.72,
+        "minimum": 0.05,
+        "maximum": 0.95,
+        "novelty_response": 0.2,
+        "contradiction_response": 0.1,
+        "maturity": 0.41,
+        "stability": 0.63
+      }
+    },
+    {
+      "schema": "mncs.learn/0",
+      "kind": "learnable_capability",
+      "id": "cap:model:world-graph",
+      "model_id": "model:world-graph",
+      "model_class": "relationship-graph",
+      "accepts": ["semantic", "language/semantic-graph"],
+      "operators": ["graph_edge_update", "hebbian", "no_learning"],
+      "mutation_scopes": ["relationship"],
+      "timescales": ["fast", "consolidation"],
+      "evaluation_dimensions": ["relational_consistency", "retrieval_utility"],
+      "plasticity": {
+        "current": 0.48,
+        "minimum": 0.02,
+        "maximum": 0.9,
+        "novelty_response": 0.15,
+        "contradiction_response": 0.25,
+        "maturity": 0.67,
+        "stability": 0.76
+      }
+    }
+  ],
+  "proposals": [
+    {
+      "schema": "mncs.learn/0",
+      "kind": "adaptation_proposal",
+      "id": "proposal:fox-prototype-001",
+      "event_id": "event:fox-river-001",
+      "target_id": "model:fox-prototype",
+      "target_revision": "rev:fox:12",
+      "operator": "prototype_update",
+      "mutation_scopes": ["internal"],
+      "timescale": "fast",
+      "reason": "Observation supplies a high-confidence fox instance consistent with the current prototype family.",
+      "expected_effect": { "semantic_consistency_delta": 0.03 },
+      "patch": { "prototype_feature": "red", "weight_delta": 0.04 },
+      "preconditions": [
+        { "target_revision": "rev:fox:12" },
+        { "learning_right": true }
+      ],
+      "provenance": {
+        "source": "event:fox-river-001",
+        "evidence_ids": ["obs:fox-river-001"]
+      },
+      "reversible": true
+    },
+    {
+      "schema": "mncs.learn/0",
+      "kind": "adaptation_proposal",
+      "id": "proposal:world-edge-001",
+      "event_id": "event:fox-river-001",
+      "target_id": "model:world-graph",
+      "target_revision": "rev:world:88",
+      "operator": "graph_edge_update",
+      "mutation_scopes": ["relationship"],
+      "timescale": "fast",
+      "reason": "Observation supports a fox-crosses-river relationship without requiring internal changes to the fox or river endpoint models.",
+      "expected_effect": { "retrieval_utility_delta": 0.06 },
+      "patch": {
+        "edge": {
+          "subject": "entity:fox",
+          "predicate": "crossed",
+          "object": "entity:river",
+          "confidence_delta": 0.08
+        }
+      },
+      "preconditions": [
+        { "target_revision": "rev:world:88" },
+        { "learning_right": true }
+      ],
+      "provenance": {
+        "source": "event:fox-river-001",
+        "evidence_ids": ["obs:fox-river-001"]
+      },
+      "reversible": true
+    }
+  ],
+  "evaluation": {
+    "schema": "mncs.learn/0",
+    "kind": "evaluation",
+    "id": "evaluation:world-edge-001",
+    "proposal_id": "proposal:world-edge-001",
+    "decision": "commit",
+    "before": {
+      "schema": "mncs.learn/0",
+      "kind": "fitness",
+      "id": "fitness:world-before",
+      "dimensions": { "relational_consistency": 0.82, "retrieval_utility": 0.71 },
+      "constraints": [
+        { "name": "rights", "satisfied": true },
+        { "name": "revision_current", "satisfied": true }
+      ],
+      "confidence": 0.88
+    },
+    "after": {
+      "schema": "mncs.learn/0",
+      "kind": "fitness",
+      "id": "fitness:world-after",
+      "dimensions": { "relational_consistency": 0.84, "retrieval_utility": 0.77 },
+      "constraints": [
+        { "name": "rights", "satisfied": true },
+        { "name": "revision_current", "satisfied": true }
+      ],
+      "confidence": 0.9
+    },
+    "reasons": ["Improves declared dimensions without violating hard constraints."]
+  }
+}
