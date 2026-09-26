@@ -1,0 +1,520 @@
+mncs 0.18;
+
+// mncs.learn.centroid.v1 — nearest-centroid classifier, operator 0.
+//
+// The first real learning operator: honest integer math, fully
+// inspectable state (per-class counts and feature sums), explicit update
+// rule, independently verifiable results. Scope: internal. Timescale:
+// fast. It proves the contract can carry a real learner before any
+// second operator generalizes it.
+//
+// State: at most 4 classes, at most 4 feature dims (the table path uses
+// dims 0..2 with the label in column 3). A class centroid is
+// sums[d]/count[d] with truncating integer division (C semantics:
+// -13/2 = -6, verified by test and matched by the Python parity rule).
+// Every accumulation uses checked arithmetic: overflow returns a
+// structured reason, never a trap, never a NaN (there are no floats).
+//
+// Prediction returns the nearest centroid label plus its squared
+// distance. The distance is an honest dissimilarity score, NOT a
+// calibrated probability. Ties resolve to the lowest class index,
+// deterministically.
+//
+// Incremental update and batch training are mathematically identical:
+// state is (count, sums) per class, so row order cannot matter. The
+// test suite asserts this rather than assuming it.
+
+module mncs.learn.centroid.v1;
+
+use mncs.learn.codes.v1 as codes;
+use mncs.learn.contract.v1 as contract;
+use mncs.data.table.v1 as table;
+use mncs.data.schema.v1 as schema;
+use mncs.math.scalar.v1 as scalar;
+use mncs.test.assertions;
+use mncs.test.suite;
+
+record CentroidState { nclasses: i64, class_ids: [i64; 4], counts: [i64; 4], sums: [[i64; 4]; 4], revision: i64, ndim: i64 }
+
+record StateOut { state: CentroidState, ok: bool, reason: i64 }
+
+record PredictOut { label: i64, dist2: i64, ok: bool, reason: i64 }
+
+record TrainReport { state: CentroidState, rows_seen: i64, rows_used: i64, rows_skipped: i64, ok: bool, reason: i64 }
+
+record EvalReport { correct: i64, total: i64, skipped: i64, confusion: [i64; 16], majority_label: i64, majority_correct: i64, ok: bool, reason: i64 }
+
+// One checked op, collapsed to value+flag so callers stay straight-line.
+record NumOut { value: i64, ok: bool }
+
+fn num_add(a: i64, b: i64) -> (result: NumOut) {
+    return match checked_add(a, b) {
+        MathResult.Ok { value } => NumOut { value: value, ok: true },
+        MathResult.Err { reason } => NumOut { value: 0, ok: false },
+    };
+}
+
+fn num_sub(a: i64, b: i64) -> (result: NumOut) {
+    return match checked_sub(a, b) {
+        MathResult.Ok { value } => NumOut { value: value, ok: true },
+        MathResult.Err { reason } => NumOut { value: 0, ok: false },
+    };
+}
+
+fn num_mul(a: i64, b: i64) -> (result: NumOut) {
+    return match checked_mul(a, b) {
+        MathResult.Ok { value } => NumOut { value: value, ok: true },
+        MathResult.Err { reason } => NumOut { value: 0, ok: false },
+    };
+}
+
+fn err_state(state: CentroidState, reason: i64) -> (result: StateOut) {
+    return StateOut { state: state, ok: false, reason: reason };
+}
+
+fn fresh_state(ndim: i64) -> (result: StateOut) {
+    let zero4: [i64; 4] = [0, 0, 0, 0];
+    let zero44: [[i64; 4]; 4] = [zero4, zero4, zero4, zero4];
+    let state: CentroidState = CentroidState { nclasses: 0, class_ids: zero4, counts: zero4, sums: zero44, revision: 0, ndim: ndim };
+    if ndim < 1 || ndim > 4 {
+        return err_state(state, codes.reason_schema_mismatch());
+    }
+    return StateOut { state: state, ok: true, reason: codes.reason_ok() };
+}
+
+// Class slot for a label, or 4 when absent. Only slots below
+// nclasses are live: class_ids starts zeroed, so an unguarded scan
+// would mistake slot 0 for label 0 in a fresh state.
+fn find_class(state: CentroidState, label: i64) -> (slot: i64) {
+    let ids: [i64; 4] = state.class_ids;
+    iterate c over ids carrying slot: i64 = 4 {
+        next slot = select(slot == 4 && c as i64 < state.nclasses && ids[c] == label, c as i64, slot);
+    }
+    return slot;
+}
+
+// One immutable update: state + labeled row -> new state.
+fn train_row(state: CentroidState, features: [i64; 4], label: i64) -> (result: StateOut) {
+    let found: i64 = find_class(state, label);
+    if found == 4 && state.nclasses >= 4 {
+        return err_state(state, codes.reason_capacity());
+    }
+    let slot: i64 = select(found == 4, state.nclasses, found);
+    let grown: i64 = select(found == 4, state.nclasses + 1, state.nclasses);
+    let ids: [i64; 4] = replace(state.class_ids, slot as u64, label);
+    let counts0: [i64; 4] = state.counts;
+    let count_up: NumOut = num_add(counts0[slot as u64], 1);
+    if !count_up.ok {
+        return err_state(state, codes.reason_overflow());
+    }
+    let counts2: [i64; 4] = replace(state.counts, slot as u64, count_up.value);
+    // Accumulate feature sums; any overflow aborts the row without
+    // touching the committed state.
+    iterate d over features carrying acc: SumAcc = SumAcc { sums: state.sums, ok: true } {
+        next acc = add_feature(acc, slot, d, features[d], state.ndim);
+    }
+    if !acc.ok {
+        return err_state(state, codes.reason_overflow());
+    }
+    let rev_up: NumOut = num_add(state.revision, 1);
+    if !rev_up.ok {
+        return err_state(state, codes.reason_overflow());
+    }
+    let advanced: CentroidState = CentroidState { nclasses: grown, class_ids: ids, counts: counts2, sums: acc.sums, revision: rev_up.value, ndim: state.ndim };
+    return StateOut { state: advanced, ok: true, reason: codes.reason_ok() };
+}
+
+record SumAcc { sums: [[i64; 4]; 4], ok: bool }
+
+fn add_feature(acc: SumAcc, slot: i64, d: u64, feature: i64, ndim: i64) -> (result: SumAcc) {
+    if !acc.ok {
+        return acc;
+    }
+    if d as i64 >= ndim {
+        return acc;
+    }
+    let live: [[i64; 4]; 4] = acc.sums;
+    let row: [i64; 4] = live[slot as u64];
+    let add: NumOut = num_add(row[d], feature);
+    if !add.ok {
+        return SumAcc { sums: acc.sums, ok: false };
+    }
+    let new_row: [i64; 4] = replace(row, d, add.value);
+    return SumAcc { sums: replace(acc.sums, slot as u64, new_row), ok: true };
+}
+
+record DistAcc { dist2: i64, ok: bool }
+
+fn dist2_to(state: CentroidState, slot: i64, features: [i64; 4]) -> (result: DistAcc) {
+    let counts0: [i64; 4] = state.counts;
+    let count: i64 = counts0[slot as u64];
+    let sums0: [[i64; 4]; 4] = state.sums;
+    let row: [i64; 4] = sums0[slot as u64];
+    iterate d over features carrying acc: DistAcc = DistAcc { dist2: 0, ok: true } {
+        next acc = add_square(acc, row[d], count, features[d], state.ndim, d);
+    }
+    return acc;
+}
+
+fn add_square(acc: DistAcc, total: i64, count: i64, feature: i64, ndim: i64, d: u64) -> (result: DistAcc) {
+    if !acc.ok {
+        return acc;
+    }
+    if d as i64 >= ndim {
+        return acc;
+    }
+    // count > 0 holds by construction: classes are created with count 1.
+    let center: i64 = total / count;
+    let diff: NumOut = num_sub(feature, center);
+    if !diff.ok {
+        return DistAcc { dist2: 0, ok: false };
+    }
+    let sq: NumOut = num_mul(diff.value, diff.value);
+    if !sq.ok {
+        return DistAcc { dist2: 0, ok: false };
+    }
+    let acc2: NumOut = num_add(acc.dist2, sq.value);
+    if !acc2.ok {
+        return DistAcc { dist2: 0, ok: false };
+    }
+    return DistAcc { dist2: acc2.value, ok: true };
+}
+
+record Best { label: i64, dist2: i64, ok: bool, reason: i64 }
+
+fn predict_row(state: CentroidState, features: [i64; 4]) -> (result: PredictOut) {
+    if state.nclasses <= 0 {
+        return PredictOut { label: 0, dist2: 0, ok: false, reason: codes.reason_untrained() };
+    }
+    let first: DistAcc = dist2_to(state, 0, features);
+    if !first.ok {
+        return PredictOut { label: 0, dist2: 0, ok: false, reason: codes.reason_overflow() };
+    }
+    let ids0: [i64; 4] = state.class_ids;
+    let seed: Best = Best { label: ids0[0], dist2: first.dist2, ok: true, reason: codes.reason_ok() };
+    iterate c over state.counts carrying best: Best = seed {
+        next best = consider(state, features, c, best);
+    }
+    return PredictOut { label: best.label, dist2: best.dist2, ok: best.ok, reason: best.reason };
+}
+
+fn consider(state: CentroidState, features: [i64; 4], c: u64, best: Best) -> (result: Best) {
+    if !best.ok {
+        return best;
+    }
+    if c as i64 >= state.nclasses || c == 0 {
+        return best;
+    }
+    let here: DistAcc = dist2_to(state, c as i64, features);
+    if !here.ok {
+        return Best { label: 0, dist2: 0, ok: false, reason: codes.reason_overflow() };
+    }
+    // Strict less-than: ties keep the incumbent, i.e. the lowest class
+    // index. Deterministic by construction.
+    if here.dist2 < best.dist2 {
+        let ids1: [i64; 4] = state.class_ids;
+        return Best { label: ids1[c], dist2: here.dist2, ok: true, reason: codes.reason_ok() };
+    }
+    return best;
+}
+
+// Two clusters on the x-axis, ndim 2:
+//   class 0: (0,0) (2,0) -> sums (2,0), count 2, centroid (1,0)
+//   class 1: (10,0) (12,0) -> sums (22,0), count 2, centroid (11,0)
+fn two_class_state() -> (result: CentroidState) {
+    let s0: StateOut = fresh_state(2);
+    let s1: StateOut = train_row(s0.state, [0, 0, 0, 0], 0);
+    let s2: StateOut = train_row(s1.state, [2, 0, 0, 0], 0);
+    let s3: StateOut = train_row(s2.state, [10, 0, 0, 0], 1);
+    let s4: StateOut = train_row(s3.state, [12, 0, 0, 0], 1);
+    return s4.state;
+}
+
+test trains_known_centroids() -> (result: TestResult) {
+    let st: CentroidState = two_class_state();
+    let counts: [i64; 4] = st.counts;
+    let sums: [[i64; 4]; 4] = st.sums;
+    let row0: [i64; 4] = sums[0];
+    let row1: [i64; 4] = sums[1];
+    let ids: [i64; 4] = st.class_ids;
+    if st.nclasses == 2 && counts[0] == 2 && counts[1] == 2 {
+        if row0[0] == 2 && row1[0] == 22 && st.revision == 4 {
+            if ids[0] == 0 && ids[1] == 1 {
+                return from_assertion(equals_i64(1, 1, 301));
+            }
+        }
+    }
+    return from_assertion(equals_i64(0, 1, 301));
+}
+
+test predicts_known_points() -> (result: TestResult) {
+    let st: CentroidState = two_class_state();
+    // (1,0) sits on centroid 0: distance 0. (9,0): 64 vs 4 -> class 1.
+    let near0: PredictOut = predict_row(st, [1, 0, 0, 0]);
+    let near1: PredictOut = predict_row(st, [9, 0, 0, 0]);
+    if near0.ok && near0.label == 0 && near0.dist2 == 0 {
+        if near1.ok && near1.label == 1 && near1.dist2 == 4 {
+            return from_assertion(equals_i64(1, 1, 302));
+        }
+    }
+    return from_assertion(equals_i64(0, 1, 302));
+}
+
+test incremental_equals_batch_order() -> (result: TestResult) {
+    // Interleaved arrival must equal grouped arrival: state is
+    // (count, sums), so order cannot matter. Asserted, not assumed.
+    let a0: StateOut = fresh_state(2);
+    let a1: StateOut = train_row(a0.state, [0, 0, 0, 0], 0);
+    let a2: StateOut = train_row(a1.state, [10, 0, 0, 0], 1);
+    let a3: StateOut = train_row(a2.state, [2, 0, 0, 0], 0);
+    let a4: StateOut = train_row(a3.state, [12, 0, 0, 0], 1);
+    let grouped: CentroidState = two_class_state();
+    let mixed: CentroidState = a4.state;
+    if grouped.counts[0] == mixed.counts[0] && grouped.counts[1] == mixed.counts[1] {
+        if grouped.sums[0][0] == mixed.sums[0][0] && grouped.sums[1][0] == mixed.sums[1][0] {
+            if grouped.revision == mixed.revision {
+                return from_assertion(equals_i64(1, 1, 303));
+            }
+        }
+    }
+    return from_assertion(equals_i64(0, 1, 303));
+}
+
+test ties_resolve_to_lowest_index() -> (result: TestResult) {
+    let s0: StateOut = fresh_state(2);
+    let s1: StateOut = train_row(s0.state, [0, 0, 0, 0], 5);
+    let s2: StateOut = train_row(s1.state, [0, 0, 0, 0], 7);
+    // Both centroids are (0,0): (3,4) is equidistant (25) from each.
+    let tied: PredictOut = predict_row(s2.state, [3, 4, 0, 0]);
+    if tied.ok && tied.label == 5 && tied.dist2 == 25 {
+        return from_assertion(equals_i64(1, 1, 304));
+    }
+    return from_assertion(equals_i64(0, 1, 304));
+}
+
+test untrained_predict_is_explicit() -> (result: TestResult) {
+    let s0: StateOut = fresh_state(2);
+    let rep: PredictOut = predict_row(s0.state, [1, 2, 0, 0]);
+    if !rep.ok && rep.reason == codes.reason_untrained() {
+        return from_assertion(equals_i64(1, 1, 305));
+    }
+    return from_assertion(equals_i64(0, 1, 305));
+}
+
+test fifth_class_exceeds_capacity() -> (result: TestResult) {
+    let s0: StateOut = fresh_state(1);
+    let s1: StateOut = train_row(s0.state, [1, 0, 0, 0], 1);
+    let s2: StateOut = train_row(s1.state, [2, 0, 0, 0], 2);
+    let s3: StateOut = train_row(s2.state, [3, 0, 0, 0], 3);
+    let s4: StateOut = train_row(s3.state, [4, 0, 0, 0], 4);
+    let s5: StateOut = train_row(s4.state, [5, 0, 0, 0], 5);
+    if s4.ok && s4.state.nclasses == 4 {
+        if !s5.ok && s5.reason == codes.reason_capacity() {
+            return from_assertion(equals_i64(1, 1, 306));
+        }
+    }
+    return from_assertion(equals_i64(0, 1, 306));
+}
+
+test overflow_returns_reason_not_trap() -> (result: TestResult) {
+    let s0: StateOut = fresh_state(1);
+    let big: StateOut = train_row(s0.state, [9223372036854775800, 0, 0, 0], 1);
+    // Adding 10 more overflows i64: structured reason, state untouched.
+    let full: StateOut = train_row(big.state, [10, 0, 0, 0], 1);
+    let fcounts: [i64; 4] = full.state.counts;
+    if big.ok && !full.ok && full.reason == codes.reason_overflow() {
+        if full.state.revision == big.state.revision && fcounts[0] == 1 {
+            return from_assertion(equals_i64(1, 1, 307));
+        }
+    }
+    return from_assertion(equals_i64(0, 1, 307));
+}
+
+test truncating_division_is_documented() -> (result: TestResult) {
+    // (-7) + (-6) = -13 over 2 truncates toward zero to -6
+    // (floor would be -7). Parity implementations must match this.
+    let s0: StateOut = fresh_state(1);
+    let s1: StateOut = train_row(s0.state, [-7, 0, 0, 0], 1);
+    let s2: StateOut = train_row(s1.state, [-6, 0, 0, 0], 1);
+    let rep: PredictOut = predict_row(s2.state, [-6, 0, 0, 0]);
+    // Centroid -6: distance 0. With floor (-7) it would be 1.
+    if rep.ok && rep.label == 1 && rep.dist2 == 0 {
+        return from_assertion(equals_i64(1, 1, 308));
+    }
+    return from_assertion(equals_i64(0, 1, 308));
+}
+
+test single_class_and_zero_variance() -> (result: TestResult) {
+    // Degenerate input is representable: one class, identical points.
+    // Prediction returns it; evaluation (host-side) shows the tie
+    // with the majority baseline instead of claiming generalization.
+    let s0: StateOut = fresh_state(1);
+    let s1: StateOut = train_row(s0.state, [4, 0, 0, 0], 9);
+    let s2: StateOut = train_row(s1.state, [4, 0, 0, 0], 9);
+    let rep: PredictOut = predict_row(s2.state, [100, 0, 0, 0]);
+    if s2.ok && s2.state.nclasses == 1 && rep.ok && rep.label == 9 {
+        return from_assertion(equals_i64(1, 1, 309));
+    }
+    return from_assertion(equals_i64(0, 1, 309));
+}
+
+// Table layout contract (checked against the Schema4, not assumed):
+// columns 0..2 are Int features, column 3 is the Int label. A row with
+// a Missing or Invalid cell in a used position is skipped and counted,
+// never coerced: missing input is not zero. The table path supports
+// ndim 1..3 (the label lives in column 3); the direct row API allows 4.
+
+fn schema_is_int4(tbl: Table) -> (ok: bool) {
+    let cols: [ColumnSpec; 4] = tbl.schema.cols;
+    iterate i over cols carrying good: bool = true {
+        next good = good && column_kind_code(cols[i]) == 0;
+    }
+    return good;
+}
+
+fn cell_int(c: Cell) -> (result: IntOut) {
+    return match c {
+        Cell.Int { value } => IntOut { value: value, present: true },
+        Cell.Text { bytes, len } => IntOut { value: 0, present: false },
+        Cell.Bool { value } => IntOut { value: 0, present: false },
+        Cell.Missing => IntOut { value: 0, present: false },
+        Cell.Invalid { code } => IntOut { value: 0, present: false },
+    };
+}
+
+record IntOut { value: i64, present: bool }
+
+record TrainAcc { state: CentroidState, seen: i64, used: i64, skipped: i64, ok: bool, reason: i64 }
+
+fn train_table(tbl: Table, state: CentroidState) -> (result: TrainReport) {
+    if !schema_is_int4(tbl) {
+        return TrainReport { state: state, rows_seen: 0, rows_used: 0, rows_skipped: 0, ok: false, reason: codes.reason_schema_mismatch() };
+    }
+    if state.ndim < 1 || state.ndim > 3 {
+        return TrainReport { state: state, rows_seen: 0, rows_used: 0, rows_skipped: 0, ok: false, reason: codes.reason_schema_mismatch() };
+    }
+    let rows: [[Cell; 4]; 16] = tbl.rows;
+    let seed: TrainAcc = TrainAcc { state: state, seen: 0, used: 0, skipped: 0, ok: true, reason: codes.reason_ok() };
+    iterate r over rows carrying acc: TrainAcc = seed {
+        next acc = train_table_row(acc, rows[r], r, tbl.row_count);
+    }
+    if !acc.ok {
+        return TrainReport { state: acc.state, rows_seen: acc.seen, rows_used: acc.used, rows_skipped: acc.skipped, ok: false, reason: acc.reason };
+    }
+    if acc.used == 0 {
+        return TrainReport { state: acc.state, rows_seen: acc.seen, rows_used: 0, rows_skipped: acc.skipped, ok: false, reason: codes.reason_empty_dataset() };
+    }
+    return TrainReport { state: acc.state, rows_seen: acc.seen, rows_used: acc.used, rows_skipped: acc.skipped, ok: true, reason: codes.reason_ok() };
+}
+
+fn train_table_row(acc: TrainAcc, row: [Cell; 4], r: u64, row_count: u64) -> (result: TrainAcc) {
+    if !acc.ok {
+        return acc;
+    }
+    if r >= row_count {
+        return acc;
+    }
+    let c0: Cell = row[0];
+    let c1: Cell = row[1];
+    let c2: Cell = row[2];
+    let c3: Cell = row[3];
+    let f0: IntOut = cell_int(c0);
+    let f1: IntOut = cell_int(c1);
+    let f2: IntOut = cell_int(c2);
+    let lab: IntOut = cell_int(c3);
+    let ndim: i64 = acc.state.ndim;
+    let have: bool = lab.present && f0.present && select(ndim >= 2, f1.present, true) && select(ndim >= 3, f2.present, true);
+    if !have {
+        return TrainAcc { state: acc.state, seen: acc.seen + 1, used: acc.used, skipped: acc.skipped + 1, ok: true, reason: codes.reason_ok() };
+    }
+    let feats: [i64; 4] = [f0.value, f1.value, f2.value, 0];
+    let out: StateOut = train_row(acc.state, feats, lab.value);
+    if !out.ok {
+        return TrainAcc { state: acc.state, seen: acc.seen + 1, used: acc.used, skipped: acc.skipped, ok: false, reason: out.reason };
+    }
+    return TrainAcc { state: out.state, seen: acc.seen + 1, used: acc.used + 1, skipped: acc.skipped, ok: true, reason: codes.reason_ok() };
+}
+
+record EvalAcc { correct: i64, total: i64, skipped: i64, confusion: [i64; 16], freq: [i64; 5], unknown_ex: i64, has_unknown: bool, ok: bool, reason: i64 }
+
+fn evaluate_table(tbl: Table, state: CentroidState) -> (result: EvalReport) {
+    if !schema_is_int4(tbl) {
+        let empty_conf: [i64; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        return EvalReport { correct: 0, total: 0, skipped: 0, confusion: empty_conf, majority_label: 0, majority_correct: 0, ok: false, reason: codes.reason_schema_mismatch() };
+    }
+    if state.ndim < 1 || state.ndim > 3 {
+        let empty_conf2: [i64; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        return EvalReport { correct: 0, total: 0, skipped: 0, confusion: empty_conf2, majority_label: 0, majority_correct: 0, ok: false, reason: codes.reason_schema_mismatch() };
+    }
+    if state.nclasses <= 0 {
+        let empty_conf3: [i64; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        return EvalReport { correct: 0, total: 0, skipped: 0, confusion: empty_conf3, majority_label: 0, majority_correct: 0, ok: false, reason: codes.reason_untrained() };
+    }
+    let rows: [[Cell; 4]; 16] = tbl.rows;
+    let zero16: [i64; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let zero5: [i64; 5] = [0, 0, 0, 0, 0];
+    let seed: EvalAcc = EvalAcc { correct: 0, total: 0, skipped: 0, confusion: zero16, freq: zero5, unknown_ex: 0, has_unknown: false, ok: true, reason: codes.reason_ok() };
+    iterate r over rows carrying acc: EvalAcc = seed {
+        next acc = eval_table_row(acc, state, rows[r], r, tbl.row_count);
+    }
+    if !acc.ok {
+        return EvalReport { correct: acc.correct, total: acc.total, skipped: acc.skipped, confusion: acc.confusion, majority_label: 0, majority_correct: 0, ok: false, reason: acc.reason };
+    }
+    if acc.total == 0 {
+        return EvalReport { correct: 0, total: 0, skipped: acc.skipped, confusion: acc.confusion, majority_label: 0, majority_correct: 0, ok: false, reason: codes.reason_empty_dataset() };
+    }
+    // Majority baseline over known-class slots plus one pooled
+    // unknown slot. Strict greater-than keeps the lowest slot on ties.
+    iterate f over acc.freq carrying win: MajWin = MajWin { slot: 0, count: 0 } {
+        next win = MajWin { slot: select(acc.freq[f] > win.count, f as i64, win.slot), count: select(acc.freq[f] > win.count, acc.freq[f], win.count) };
+    }
+    let ids: [i64; 4] = state.class_ids;
+    let maj_label: i64 = select(win.slot < 4, ids[win.slot as u64], acc.unknown_ex);
+    return EvalReport { correct: acc.correct, total: acc.total, skipped: acc.skipped, confusion: acc.confusion, majority_label: maj_label, majority_correct: win.count, ok: true, reason: codes.reason_ok() };
+}
+
+record MajWin { slot: i64, count: i64 }
+
+fn eval_table_row(acc: EvalAcc, state: CentroidState, row: [Cell; 4], r: u64, row_count: u64) -> (result: EvalAcc) {
+    if !acc.ok {
+        return acc;
+    }
+    if r >= row_count {
+        return acc;
+    }
+    let c0: Cell = row[0];
+    let c1: Cell = row[1];
+    let c2: Cell = row[2];
+    let c3: Cell = row[3];
+    let f0: IntOut = cell_int(c0);
+    let f1: IntOut = cell_int(c1);
+    let f2: IntOut = cell_int(c2);
+    let lab: IntOut = cell_int(c3);
+    let ndim: i64 = state.ndim;
+    let have: bool = lab.present && f0.present && select(ndim >= 2, f1.present, true) && select(ndim >= 3, f2.present, true);
+    if !have {
+        return EvalAcc { correct: acc.correct, total: acc.total, skipped: acc.skipped + 1, confusion: acc.confusion, freq: acc.freq, unknown_ex: acc.unknown_ex, has_unknown: acc.has_unknown, ok: true, reason: codes.reason_ok() };
+    }
+    let feats: [i64; 4] = [f0.value, f1.value, f2.value, 0];
+    let pred: PredictOut = predict_row(state, feats);
+    if !pred.ok {
+        return EvalAcc { correct: acc.correct, total: acc.total, skipped: acc.skipped, confusion: acc.confusion, freq: acc.freq, unknown_ex: acc.unknown_ex, has_unknown: acc.has_unknown, ok: false, reason: pred.reason };
+    }
+    let actual: i64 = find_class(state, lab.value);
+    let pi: i64 = find_class(state, pred.label);
+    let freqs: [i64; 5] = acc.freq;
+    if actual == 4 {
+        // Unseen label: a real generalization event. Counts against
+        // accuracy and pools into the unknown baseline slot; the 4x4
+        // confusion only tracks known-label rows.
+        let fslot: [i64; 5] = replace(freqs, 4, freqs[4] + 1);
+        let ex: i64 = select(acc.has_unknown, acc.unknown_ex, lab.value);
+        return EvalAcc { correct: acc.correct, total: acc.total + 1, skipped: acc.skipped, confusion: acc.confusion, freq: fslot, unknown_ex: ex, has_unknown: true, ok: true, reason: codes.reason_ok() };
+    }
+    let fslot2: [i64; 5] = replace(freqs, actual as u64, freqs[actual as u64] + 1);
+    let cell_at: i64 = actual * 4 + pi;
+    let con: [i64; 16] = acc.confusion;
+    let con2: [i64; 16] = replace(con, cell_at as u64, con[cell_at as u64] + 1);
+    let hit: bool = pred.label == lab.value;
+    return EvalAcc { correct: acc.correct + select(hit, 1, 0), total: acc.total + 1, skipped: acc.skipped, confusion: con2, freq: fslot2, unknown_ex: acc.unknown_ex, has_unknown: acc.has_unknown, ok: true, reason: codes.reason_ok() };
+}

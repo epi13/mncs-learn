@@ -1,0 +1,182 @@
+mncs 0.18;
+
+// mncs.learn.codes.v1 — the shared numeric vocabulary of mncs-learn.
+//
+// Every code below has a mirror in `tools/learn/codes.py` and in the
+// historical Python oracle (`src/mncs_learn/operators.py`). The native
+// functions are the authority; the mirrors exist only so the host can
+// speak the same numbers without re-deriving semantics.
+//
+// Scopes (mutation breadth): 0 internal, 1 relationship, 2 topology,
+// 3 routing. Timescales: 0 fast, 1 consolidation, 2 evolution.
+// Decisions: 0 commit, 1 reject, 2 defer.
+// Observation kinds: 0 feature_label (train/update), 1 feature_only
+// (predict/evaluate).
+//
+// Operators implemented natively in v1:
+//   0 centroid_update   nearest-centroid state (internal, fast).
+//   1 memorization      exact-match episodic store (internal, fast).
+//   2 no_learning       intentional no-op; records why, mutates nothing.
+// The wider 23-operator vocabulary from the RFC remains a registry of
+// names; only these three participate in native capability negotiation
+// until a second real implementation demonstrates otherwise.
+//
+// Learn reasons (every LearnRep.reason value):
+//   0 ok                  1 untrained            2 schema_mismatch
+//   3 overflow            4 empty_dataset        5 degenerate
+//   6 unknown_label       7 stale_revision       8 rights_denied
+//   9 ineligible_kind    10 plasticity_zero     11 operator_mismatch
+//  12 capacity           13 constraint_violated 14 no_change
+//  15 improves           16 regresses           17 skipped_row
+
+module mncs.learn.codes.v1;
+
+use mncs.test.assertions;
+use mncs.test.suite;
+
+fn scope_internal() -> (code: i64) {
+    return 0;
+}
+
+fn scope_relationship() -> (code: i64) {
+    return 1;
+}
+
+fn scope_topology() -> (code: i64) {
+    return 2;
+}
+
+fn scope_routing() -> (code: i64) {
+    return 3;
+}
+
+fn timescale_fast() -> (code: i64) {
+    return 0;
+}
+
+fn timescale_consolidation() -> (code: i64) {
+    return 1;
+}
+
+fn timescale_evolution() -> (code: i64) {
+    return 2;
+}
+
+fn decision_commit() -> (code: i64) {
+    return 0;
+}
+
+fn decision_reject() -> (code: i64) {
+    return 1;
+}
+
+fn decision_defer() -> (code: i64) {
+    return 2;
+}
+
+fn obs_feature_label() -> (code: i64) {
+    return 0;
+}
+
+fn obs_feature_only() -> (code: i64) {
+    return 1;
+}
+
+fn op_centroid_update() -> (code: i64) {
+    return 0;
+}
+
+fn op_memorization() -> (code: i64) {
+    return 1;
+}
+
+fn op_no_learning() -> (code: i64) {
+    return 2;
+}
+
+fn reason_ok() -> (code: i64) {
+    return 0;
+}
+
+fn reason_untrained() -> (code: i64) {
+    return 1;
+}
+
+fn reason_schema_mismatch() -> (code: i64) {
+    return 2;
+}
+
+fn reason_overflow() -> (code: i64) {
+    return 3;
+}
+
+fn reason_empty_dataset() -> (code: i64) {
+    return 4;
+}
+
+fn reason_degenerate() -> (code: i64) {
+    return 5;
+}
+
+fn reason_unknown_label() -> (code: i64) {
+    return 6;
+}
+
+fn reason_stale_revision() -> (code: i64) {
+    return 7;
+}
+
+fn reason_rights_denied() -> (code: i64) {
+    return 8;
+}
+
+fn reason_ineligible_kind() -> (code: i64) {
+    return 9;
+}
+
+fn reason_plasticity_zero() -> (code: i64) {
+    return 10;
+}
+
+fn reason_operator_mismatch() -> (code: i64) {
+    return 11;
+}
+
+fn reason_capacity() -> (code: i64) {
+    return 12;
+}
+
+fn reason_constraint_violated() -> (code: i64) {
+    return 13;
+}
+
+fn reason_no_change() -> (code: i64) {
+    return 14;
+}
+
+fn reason_improves() -> (code: i64) {
+    return 15;
+}
+
+fn reason_regresses() -> (code: i64) {
+    return 16;
+}
+
+fn reason_skipped_row() -> (code: i64) {
+    return 17;
+}
+
+test codes_match_contract() -> (result: TestResult) {
+    if scope_internal() == 0 && scope_relationship() == 1 && scope_topology() == 2 && scope_routing() == 3 {
+        if timescale_fast() == 0 && timescale_consolidation() == 1 && timescale_evolution() == 2 {
+            if decision_commit() == 0 && decision_reject() == 1 && decision_defer() == 2 {
+                if op_centroid_update() == 0 && op_memorization() == 1 && op_no_learning() == 2 {
+                    if obs_feature_label() == 0 && obs_feature_only() == 1 {
+                        return from_assertion(equals_i64(reason_skipped_row(), 17, 101));
+                    }
+                }
+            }
+        }
+    }
+    return from_assertion(equals_i64(0, 1, 101));
+}

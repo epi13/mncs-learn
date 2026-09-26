@@ -1,0 +1,252 @@
+mncs 0.18;
+
+// mncs.learn.contract.v1 — the evidence-governed state-transition protocol.
+//
+// Learning is proposal-driven: an observation never mutates durable state
+// directly. An eligible event yields a proposal; fitness evaluation resolves
+// it to commit, reject, or defer; a commit advances a revision. Every
+// function below is total: invalid input yields a LearnRep carrying a
+// reason code, never a trap.
+//
+// Confidence uses per-mille integers (0..1000) instead of floats: the
+// mapping is explicit, deterministic, and matches the Python oracle's
+// 0.0..1.0 range by construction (oracle_value * 1000, truncated).
+//
+// Identifiers (model, source, evidence) are i64 codes. The host owns the
+// string registry (names, digests, lineage links); native code compares
+// codes only, so the contract never smuggles strings into decisions.
+
+module mncs.learn.contract.v1;
+
+use mncs.learn.codes.v1 as codes;
+use mncs.test.assertions;
+use mncs.test.suite;
+
+// Plasticity bounds: 0 <= min <= cur <= max <= 1000.
+record Plasticity { cur_pm: i64, min_pm: i64, max_pm: i64 }
+
+// What a learnable advertises. Accepts exactly one observation kind and
+// one operator in v1; negotiation over sets is future scope.
+record Capability { model: i64, class_code: i64, accepts_kind: i64, operator: i64, scope: i64, timescale: i64, plast_cur_pm: i64, plast_min_pm: i64, plast_max_pm: i64 }
+
+// One typed example. Features are positional i64 with ndim meaningful
+// entries; semantic feature identity (names, units) lives in the host
+// artifact beside the dataset digest, never erased, never used for math.
+record Observation { kind: i64, features: [i64; 4], ndim: i64, label: i64, has_label: bool, conf_pm: i64, rights_learn: bool, source: i64 }
+
+// A candidate transition. Evidence ancestry is an i64 evidence-set code;
+// the host binds it to observation ids and provenance.
+record Proposal { operator: i64, scope: i64, timescale: i64, target_model: i64, target_rev: i64, expected_delta_pm: i64, reversible: bool, evidence: i64 }
+
+// Every fallible outcome: ok plus a reason code from mncs.learn.codes.
+record LearnRep { ok: bool, reason: i64 }
+
+fn rep_ok() -> (result: LearnRep) {
+    return LearnRep { ok: true, reason: codes.reason_ok() };
+}
+
+fn rep_err(reason: i64) -> (result: LearnRep) {
+    return LearnRep { ok: false, reason: reason };
+}
+
+fn validate_plasticity(p: Plasticity) -> (result: LearnRep) {
+    if p.min_pm < 0 {
+        return rep_err(codes.reason_schema_mismatch());
+    }
+    if p.max_pm > 1000 {
+        return rep_err(codes.reason_schema_mismatch());
+    }
+    if p.min_pm > p.cur_pm {
+        return rep_err(codes.reason_schema_mismatch());
+    }
+    if p.cur_pm > p.max_pm {
+        return rep_err(codes.reason_schema_mismatch());
+    }
+    return rep_ok();
+}
+
+fn validate_capability(c: Capability) -> (result: LearnRep) {
+    if c.accepts_kind != codes.obs_feature_label() && c.accepts_kind != codes.obs_feature_only() {
+        return rep_err(codes.reason_schema_mismatch());
+    }
+    // v1 native adapters: centroid_update and no_learning. Memorization
+    // (code 1) is vocabulary until its adapter lands.
+    if c.operator != codes.op_centroid_update() && c.operator != codes.op_no_learning() {
+        return rep_err(codes.reason_operator_mismatch());
+    }
+    if c.scope < codes.scope_internal() || c.scope > codes.scope_routing() {
+        return rep_err(codes.reason_schema_mismatch());
+    }
+    if c.timescale < codes.timescale_fast() || c.timescale > codes.timescale_evolution() {
+        return rep_err(codes.reason_schema_mismatch());
+    }
+    let plast: Plasticity = Plasticity { cur_pm: c.plast_cur_pm, min_pm: c.plast_min_pm, max_pm: c.plast_max_pm };
+    return validate_plasticity(plast);
+}
+
+fn validate_observation(o: Observation) -> (result: LearnRep) {
+    if o.kind != codes.obs_feature_label() && o.kind != codes.obs_feature_only() {
+        return rep_err(codes.reason_schema_mismatch());
+    }
+    if o.ndim < 1 || o.ndim > 4 {
+        return rep_err(codes.reason_schema_mismatch());
+    }
+    if o.conf_pm < 0 || o.conf_pm > 1000 {
+        return rep_err(codes.reason_schema_mismatch());
+    }
+    if o.kind == codes.obs_feature_label() && !o.has_label {
+        return rep_err(codes.reason_schema_mismatch());
+    }
+    return rep_ok();
+}
+
+// Eligibility mirrors the Python oracle's LearningScheduler.eligible:
+// rights first, then kind, then plasticity. No operator probing happens
+// here; selection is a separate step.
+fn check_eligible(cap: Capability, obs_kind: i64, rights_learn: bool) -> (result: LearnRep) {
+    if !rights_learn {
+        return rep_err(codes.reason_rights_denied());
+    }
+    if obs_kind != cap.accepts_kind {
+        return rep_err(codes.reason_ineligible_kind());
+    }
+    if cap.plast_cur_pm <= 0 {
+        return rep_err(codes.reason_plasticity_zero());
+    }
+    return rep_ok();
+}
+
+// Proposal construction validates scope/timescale against the fixed
+// vocabulary. Content (patches, preconditions) is operator-specific and
+// lives in operator modules; the common layer checks the envelope.
+record ProposeOut { proposal: Proposal, ok: bool, reason: i64 }
+
+fn propose(operator: i64, scope: i64, timescale: i64, target_model: i64, target_rev: i64, expected_delta_pm: i64, reversible: bool, evidence: i64) -> (result: ProposeOut) {
+    let envelope: Proposal = Proposal { operator: operator, scope: scope, timescale: timescale, target_model: target_model, target_rev: target_rev, expected_delta_pm: expected_delta_pm, reversible: reversible, evidence: evidence };
+    if operator != codes.op_centroid_update() && operator != codes.op_no_learning() {
+        return ProposeOut { proposal: envelope, ok: false, reason: codes.reason_operator_mismatch() };
+    }
+    if scope < codes.scope_internal() || scope > codes.scope_routing() {
+        return ProposeOut { proposal: envelope, ok: false, reason: codes.reason_schema_mismatch() };
+    }
+    if timescale < codes.timescale_fast() || timescale > codes.timescale_evolution() {
+        return ProposeOut { proposal: envelope, ok: false, reason: codes.reason_schema_mismatch() };
+    }
+    return ProposeOut { proposal: envelope, ok: true, reason: codes.reason_ok() };
+}
+
+// Fitness resolution. Mirrors the oracle: improvement commits, regress
+// rejects, and — unlike scalar-loss frameworks — an unchanged fitness
+// defers for more evidence instead of pretending to decide. A violated
+// hard constraint rejects regardless of improvement.
+record DecideOut { decision: i64, reason: i64 }
+
+fn decide(before_pm: i64, after_pm: i64, constraints_ok: bool) -> (result: DecideOut) {
+    if !constraints_ok {
+        return DecideOut { decision: codes.decision_reject(), reason: codes.reason_constraint_violated() };
+    }
+    if after_pm > before_pm {
+        return DecideOut { decision: codes.decision_commit(), reason: codes.reason_improves() };
+    }
+    if after_pm < before_pm {
+        return DecideOut { decision: codes.decision_reject(), reason: codes.reason_regresses() };
+    }
+    return DecideOut { decision: codes.decision_defer(), reason: codes.reason_no_change() };
+}
+
+// Stale-proposal gate: a commit may only apply to the revision the
+// proposal was evaluated against.
+fn check_revision(state_rev: i64, proposal_rev: i64) -> (result: LearnRep) {
+    if state_rev == proposal_rev {
+        return rep_ok();
+    }
+    return rep_err(codes.reason_stale_revision());
+}
+
+test plasticity_bounds_hold() -> (result: TestResult) {
+    let good: Plasticity = Plasticity { cur_pm: 700, min_pm: 50, max_pm: 950 };
+    let bad: Plasticity = Plasticity { cur_pm: 700, min_pm: 800, max_pm: 950 };
+    let high: Plasticity = Plasticity { cur_pm: 1200, min_pm: 0, max_pm: 1000 };
+    if validate_plasticity(good).ok && !validate_plasticity(bad).ok && !validate_plasticity(high).ok {
+        return from_assertion(equals_i64(validate_plasticity(bad).reason, codes.reason_schema_mismatch(), 201));
+    }
+    return from_assertion(equals_i64(0, 1, 201));
+}
+
+test capability_rejects_unknown_operator() -> (result: TestResult) {
+    let cap: Capability = Capability { model: 1, class_code: 7, accepts_kind: codes.obs_feature_label(), operator: 9, scope: codes.scope_internal(), timescale: codes.timescale_fast(), plast_cur_pm: 700, plast_min_pm: 50, plast_max_pm: 950 };
+    let rep: LearnRep = validate_capability(cap);
+    if !rep.ok && rep.reason == codes.reason_operator_mismatch() {
+        return from_assertion(equals_i64(1, 1, 202));
+    }
+    return from_assertion(equals_i64(0, 1, 202));
+}
+
+test eligibility_matches_oracle_order() -> (result: TestResult) {
+    // rights denied beats kind mismatch beats plasticity zero.
+    let cap: Capability = Capability { model: 1, class_code: 7, accepts_kind: codes.obs_feature_label(), operator: codes.op_centroid_update(), scope: codes.scope_internal(), timescale: codes.timescale_fast(), plast_cur_pm: 0, plast_min_pm: 0, plast_max_pm: 1000 };
+    let denied: LearnRep = check_eligible(cap, codes.obs_feature_only(), false);
+    let kind: LearnRep = check_eligible(cap, codes.obs_feature_only(), true);
+    let plast: LearnRep = check_eligible(cap, codes.obs_feature_label(), true);
+    let good_cap: Capability = Capability { model: 1, class_code: 7, accepts_kind: codes.obs_feature_label(), operator: codes.op_centroid_update(), scope: codes.scope_internal(), timescale: codes.timescale_fast(), plast_cur_pm: 700, plast_min_pm: 50, plast_max_pm: 950 };
+    let good: LearnRep = check_eligible(good_cap, codes.obs_feature_label(), true);
+    if !denied.ok && denied.reason == codes.reason_rights_denied() {
+        if !kind.ok && kind.reason == codes.reason_ineligible_kind() {
+            if !plast.ok && plast.reason == codes.reason_plasticity_zero() {
+                if good.ok {
+                    return from_assertion(equals_i64(1, 1, 203));
+                }
+            }
+        }
+    }
+    return from_assertion(equals_i64(0, 1, 203));
+}
+
+test decide_matches_oracle_fitness() -> (result: TestResult) {
+    // Oracle: 0.5 -> 0.6 commits (500 -> 600 per-mille).
+    let up: DecideOut = decide(500, 600, true);
+    let flat: DecideOut = decide(600, 600, true);
+    let down: DecideOut = decide(600, 500, true);
+    let blocked: DecideOut = decide(100, 900, false);
+    if up.decision == codes.decision_commit() && up.reason == codes.reason_improves() {
+        if flat.decision == codes.decision_defer() && flat.reason == codes.reason_no_change() {
+            if down.decision == codes.decision_reject() && down.reason == codes.reason_regresses() {
+                if blocked.decision == codes.decision_reject() && blocked.reason == codes.reason_constraint_violated() {
+                    return from_assertion(equals_i64(1, 1, 204));
+                }
+            }
+        }
+    }
+    return from_assertion(equals_i64(0, 1, 204));
+}
+
+test revision_gate_detects_stale() -> (result: TestResult) {
+    if check_revision(3, 3).ok && !check_revision(4, 3).ok && check_revision(4, 3).reason == codes.reason_stale_revision() {
+        return from_assertion(equals_i64(1, 1, 205));
+    }
+    return from_assertion(equals_i64(0, 1, 205));
+}
+
+test propose_validates_envelope() -> (result: TestResult) {
+    let good: ProposeOut = propose(codes.op_centroid_update(), codes.scope_internal(), codes.timescale_fast(), 1, 0, 100, true, 42);
+    let bad_op: ProposeOut = propose(9, codes.scope_internal(), codes.timescale_fast(), 1, 0, 100, true, 42);
+    let bad_scope: ProposeOut = propose(codes.op_centroid_update(), 7, codes.timescale_fast(), 1, 0, 100, true, 42);
+    if good.ok && good.proposal.evidence == 42 {
+        if !bad_op.ok && bad_op.reason == codes.reason_operator_mismatch() {
+            if !bad_scope.ok && bad_scope.reason == codes.reason_schema_mismatch() {
+                return from_assertion(equals_i64(1, 1, 206));
+            }
+        }
+    }
+    return from_assertion(equals_i64(0, 1, 206));
+}
+
+test observation_validation_is_typed() -> (result: TestResult) {
+    let good: Observation = Observation { kind: codes.obs_feature_label(), features: [1, 2, 0, 0], ndim: 2, label: 7, has_label: true, conf_pm: 970, rights_learn: true, source: 3 };
+    let no_label: Observation = Observation { kind: codes.obs_feature_label(), features: [1, 2, 0, 0], ndim: 2, label: 0, has_label: false, conf_pm: 970, rights_learn: true, source: 3 };
+    let bad_dim: Observation = Observation { kind: codes.obs_feature_only(), features: [1, 2, 0, 0], ndim: 5, label: 0, has_label: false, conf_pm: 1000, rights_learn: true, source: 3 };
+    if validate_observation(good).ok && !validate_observation(no_label).ok && !validate_observation(bad_dim).ok {
+        return from_assertion(equals_i64(1, 1, 207));
+    }
+    return from_assertion(equals_i64(0, 1, 207));
+}

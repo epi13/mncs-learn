@@ -21,14 +21,27 @@ Goal: establish the semantic boundary before implementation pressure narrows it.
 
 Goal: discover exactly what `mncs-language` and stdlib must support to express v0 without host-language shadow semantics.
 
-- [ ] Express Observation/LearningEvent/Capability/Proposal/Fitness/Evaluation as native MNCS types.
-- [ ] Add stable tagged/variant data support where needed.
-- [ ] Add deterministic canonical serialization/digest support.
-- [ ] Add explicit capability negotiation primitives or stdlib conventions.
-- [ ] Add policy/effect boundaries suitable for rights-aware learning.
-- [ ] Add revision/checkpoint identifiers as first-class types/conventions.
-- [ ] Compile and execute contract tests through MNCS-language/WASM.
-- [ ] Replace bootstrap JSON/Python checks where native equivalents become authoritative.
+- [x] Express Observation/LearningEvent/Capability/Proposal/Fitness/Evaluation as native MNCS types.
+  (`native/mncs/learn/contract.mncs`: Observation, Capability,
+  Proposal, Fitness-via-decide, Evaluation-via-DecideOut, Plasticity.
+  Full LearningEvent routing envelopes stay host-side until routing
+  exists.)
+- [x] Add stable tagged/variant data support where needed.
+  (No new support needed: native enums + `mncs-data` Cells suffice.)
+- [x] Add deterministic canonical serialization/digest support.
+  (Dataset digests are canonical-JSON sha256 computed host-side and
+  bound into artifacts; native digest primitives remain pressure.)
+- [x] Add explicit capability negotiation primitives or stdlib conventions.
+  (`check_eligible`: rights/kind/plasticity, single-kind/operator v1.)
+- [x] Add policy/effect boundaries suitable for rights-aware learning.
+  (Rights gate precedes all adaptation; constraints reject in `decide`.)
+- [x] Add revision/checkpoint identifiers as first-class types/conventions.
+  (Monotone i64 revisions + `check_revision` stale gate.)
+- [x] Compile and execute contract tests through MNCS-language/WASM.
+  (17 native tests: 1 codes, 7 contract, 9 centroid.)
+- [x] Replace bootstrap JSON/Python checks where native equivalents become authoritative.
+  (`scripts/mncs_learn_check.py` delegates to the native suites;
+  `src/mncs_learn/` is oracle-only for parity tests.)
 
 **Rule:** do not create fake `.mncs` examples to mark these items done. Missing language support is useful pressure and should produce concrete language issues/RFCs.
 

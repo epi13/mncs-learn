@@ -70,12 +70,33 @@ For topology-changing operators, require stronger preconditions and evaluation t
 Run:
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+PYTHONPATH=oracle python3 -m unittest discover -s tests
 python3 scripts/mncs_learn_check.py --result-file /tmp/mncs-learn-check.json --revision working-tree
 ```
+
+With the toolchain available, also run the native suites and the host
+parity suite explicitly:
+
+```bash
+export MNCS_LANGUAGE_ROOT=../mncs-language
+export MNCS_TEST_NATIVE=../mncs-test/native
+export MNCS_BIN=../mncs-language/target/debug/mncs
+export MNCS_CACHE_DIR=~/.cache/mncs-learn
+for m in codes contract centroid; do
+  $MNCS_BIN test native/mncs/learn/$m.mncs --library ../mncs-language/library \
+    --library ../mncs-test/native --library native \
+    --library ../mncs-data/src --library ../mncs-math/src \
+    --cache-dir $MNCS_CACHE_DIR
+done
+python3 -m unittest tests.test_learn
+```
+
+`oracle/mncs_learn/` is the historical oracle: parity reference only,
+never a production path. Learning semantics live in
+`native/mncs/learn/`; `tools/learn/` is transport (no decision logic).
 
 The second command emits `mncs.check-result/1` evidence consumed by `mncs-actions`.
 
 ## Bootstrap code rule
 
-`src/mncs_learn/reference.py` is deliberately small. It exists to prove lifecycle semantics, not to become a general Python ML framework. If feature work starts turning it into the real product, stop and reassess whether the capability belongs in MNCS-language, MNEL, memory, ingest, or another family repo.
+`oracle/mncs_learn/reference.py` is deliberately small. It exists to prove lifecycle semantics, not to become a general Python ML framework. If feature work starts turning it into the real product, stop and reassess whether the capability belongs in MNCS-language, MNEL, memory, ingest, or another family repo.

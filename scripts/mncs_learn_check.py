@@ -20,17 +20,66 @@ CHECK_ID = "learn-contract-tests"
 PROVIDER = "mncs-learn-bootstrap"
 
 
+def find_mncs() -> str | None:
+    for candidate in (
+        os.environ.get("MNCS_BIN"),
+        os.environ.get("MNCS_BINARY"),
+    ):
+        if candidate and Path(candidate).is_file():
+            return candidate
+    root = os.environ.get("MNCS_LANGUAGE_ROOT")
+    if root:
+        candidate = Path(root) / "target" / "debug" / "mncs"
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def native_suites(mncs: str, repo: Path, workspace: Path) -> tuple[bool, str]:
+    """Delegate proof to the native MNCS suites (contract over Python)."""
+    libraries = [str(repo / "native")]
+    language_root = os.environ.get("MNCS_LANGUAGE_ROOT")
+    if language_root:
+        libraries.append(str(Path(language_root) / "library"))
+    test_native = os.environ.get("MNCS_TEST_NATIVE")
+    if test_native:
+        libraries.append(test_native)
+    for owner, sub in (("mncs-data", "src"), ("mncs-math", "src")):
+        candidate = workspace / owner / sub
+        if candidate.is_dir():
+            libraries.append(str(candidate))
+    passed, total = 0, 0
+    for module in ("codes", "contract", "centroid"):
+        command = [mncs, "test", str(repo / "native" / "mncs" / "learn" /
+                                     f"{module}.mncs"),
+                   "--format", "json"]
+        for library in libraries:
+            command += ["--library", library]
+        try:
+            completed = subprocess.run(command, capture_output=True,
+                                       text=True, check=False, timeout=300)
+            document = json.loads(completed.stdout)
+        except Exception as exc:
+            return False, f"native {module}: runner error {exc}"
+        if document.get("classification") != "passed":
+            return False, (f"native {module}: "
+                           f"{document.get('classification')}")
+        total += 1
+        passed += 1
+    return True, f"native suites pass ({passed}/{total})"
+
+
 def run(repo: Path) -> tuple[bool, str]:
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(repo / "src") + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env["PYTHONPATH"] = str(repo / "oracle") + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     completed = subprocess.run(
-        [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+        [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
         cwd=repo,
         env=env,
         capture_output=True,
         text=True,
         check=False,
-        timeout=120,
+        timeout=600,
     )
 
     if completed.returncode != 0:
@@ -62,7 +111,15 @@ def run(repo: Path) -> tuple[bool, str]:
     if not expected_invariants <= set(boundary.get("invariants", [])):
         return False, "boundary is missing required machine-native learning invariants"
 
-    return True, "bootstrap contracts, lifecycle tests, rights gating, and four-scope boundary pass"
+    summary = ("bootstrap contracts, lifecycle tests, rights gating, "
+               "and four-scope boundary pass")
+    mncs = find_mncs()
+    if mncs is None:
+        return True, summary + "; native suites not exercised (no toolchain)"
+    native_ok, native_note = native_suites(mncs, repo, repo.parent)
+    if not native_ok:
+        return False, f"{summary}; {native_note}"
+    return True, f"{summary}; {native_note}"
 
 
 def main() -> int:

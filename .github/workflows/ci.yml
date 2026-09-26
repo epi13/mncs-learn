@@ -18,7 +18,7 @@ jobs:
 
       - name: Run reference lifecycle tests
         env:
-          PYTHONPATH: src
+          PYTHONPATH: oracle
         run: python3 -m unittest discover -s tests -v
 
       - name: Produce local MNCS check evidence

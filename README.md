@@ -240,16 +240,67 @@ rfcs/0001-machine-native-learning.md
                               normative architectural RFC
 spec/mncs-learn-v0.schema.json
                               bootstrap contract vocabulary
-src/mncs_learn/reference.py   small executable reference protocol
-src/mncs_learn/operators.py   operator catalog
+native/mncs/learn/           canonical native implementation:
+  codes.mncs                  shared numeric vocabulary
+  contract.mncs               eligibility/proposal/fitness/commit protocol
+  centroid.mncs               nearest-centroid operator (operator 0)
+tools/learn/                  thin host bridge (datasets, artifacts, CLI)
+tools/mncs_learn.py           CLI entry point
+tests/test_learn.py           host suite (parity/known-answer/properties)
+tests/test_reference.py       bootstrap oracle invariants
+oracle/mncs_learn/            historical Python oracle (non-canonical;
+                              parity reference only, not a runtime path)
 examples/fox-learning-cycle.json
                               end-to-end heterogeneous example
 docs/architecture.md          component model and mutation scopes
 docs/operators.md             operator semantics
 docs/integration.md           MNCS family boundaries
-tests/                        executable invariants
+docs/PRESSURES.md             genuine language/runtime pressures
 scripts/mncs_learn_check.py   mncs-actions project evidence producer
 .github/workflows/            CI and family conformance
+```
+
+## What is actually implemented (v1)
+
+Learning here means **evidence-governed state transition**, and v1
+implements one complete path through it:
+
+```text
+typed dataset (mncs-data Table, digest-identified)
+  -> eligibility (rights/kind/plasticity, native contract)
+  -> proposal (operator envelope, native contract)
+  -> training/update (native centroid_update)
+  -> learned artifact (typed JSON: algorithm, classes, state,
+     dataset digest, config, metrics, revision)
+  -> prediction (nearest centroid + squared distance)
+  -> held-out evaluation (accuracy, confusion, majority baseline)
+  -> fitness decision (commit/reject/defer, native contract)
+```
+
+The first native learner is a **nearest-centroid classifier**
+(`centroid_update`, internal scope, fast timescale): per-class counts
+and feature sums, truncating integer centroids, checked arithmetic
+(overflow is a structured reason, never a trap or NaN), ties resolving
+to the lowest class index. State is `(count, sums)`, so incremental
+update provably equals batch training — asserted by test, not assumed.
+`no_learning` (operator 2) is the intentional no-op. The wider
+23-operator vocabulary remains a registry; adapters land one at a time.
+
+Datasets reuse `mncs-data` Tables (4 Int columns `[f0, f1, f2,
+label]`, ≤16 rows); Missing/Invalid cells skip rows with counts,
+never coerce to zero. Statistics reuse `mncs-math` checked ops.
+Persistence is atomic JSON artifacts; Store generations remain the
+long-term durability story (see `docs/PRESSURES.md`).
+
+Verify with:
+
+```text
+export MNCS_LANGUAGE_ROOT=../mncs-language
+export MNCS_TEST_NATIVE=../mncs-test/native
+export MNCS_BIN=../mncs-language/target/debug/mncs
+export MNCS_CACHE_DIR=~/.cache/mncs-learn
+python3 -m unittest tests.test_learn
+python3 tools/mncs_learn.py train --file dataset.json --name demo --evaluate
 ```
 
 ## Normative status
@@ -260,7 +311,15 @@ The architectural invariant is normative for this repository:
 
 The JSON schema and Python code are **bootstrap reference artifacts**, not the final MNCS language/runtime representation. Their purpose is to make the design executable and falsifiable while `mncs-language`, its standard library, and the wider family are pressured toward native representations.
 
-When `mncs-language` can express a contract cleanly, this repository should prefer the native form and retain host-language code only where it is genuinely a backend or compatibility layer.
+As of v1, the learning contract (codes, eligibility, proposals,
+fitness, commit/revision) and the first operator (nearest-centroid)
+are **canonical native MNCS** under `native/mncs/learn/`, proven by
+native test blocks and a host parity suite. The historical Python in
+`oracle/mncs_learn/` remains solely as an independent oracle for parity
+tests — it is not a runtime path, and normal Learn functionality runs
+through MNCS. Host Python under `tools/learn/` is transport only
+(dataset encoding, artifact files, CLI); it encodes no learning
+semantics.
 
 ## Current definition of done
 
