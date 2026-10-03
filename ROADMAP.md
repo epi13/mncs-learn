@@ -1,6 +1,9 @@
 # Roadmap
 
 <!-- MNCS:generated:begin -->
+## Evidence-bound roadmap
+
+- **complete** — Declared ambient projection surfaces satisfy their contract (`mncs-learn:projection-conformance`)
 <!-- MNCS:generated:end -->
 
 This roadmap is ordered to keep `mncs-learn` machine-native rather than accidentally growing a permanent Python training framework.

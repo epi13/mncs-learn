@@ -1,6 +1,19 @@
 # mncs-learn
 
 <!-- MNCS:generated:begin -->
+## Project entry
+
+Machine-native learning orchestration for heterogeneous micro-models, adaptive graphs, and evidence-driven state transitions: training as evidence-governed state transition across a heterogeneous computational graph.
+
+```bash
+python3 scripts/mncs_learn_check.py --result-file target/learn-check.json
+```
+
+Declared capabilities (declarations do not establish execution health):
+
+- `learning-protocol/0.1` — mncs-library (experimental)
+
+Semantic sources and ownership: `.mncs/projections.json`.
 <!-- MNCS:generated:end -->
 
 Machine-native learning orchestration for heterogeneous micro-models, adaptive graphs, and evidence-driven state transitions in the MNCS ecosystem.

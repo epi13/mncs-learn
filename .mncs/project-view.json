@@ -1,0 +1,22 @@
+{
+  "capabilities": [
+    {
+      "contract": "learning-protocol",
+      "fingerprint_sources": [
+        "native/mncs/learn/"
+      ],
+      "kind": "mncs-library",
+      "stability": "experimental",
+      "version": "0.1"
+    }
+  ],
+  "dependencies": [],
+  "entry": [
+    "python3 scripts/mncs_learn_check.py --result-file target/learn-check.json"
+  ],
+  "purpose": "Machine-native learning orchestration for heterogeneous micro-models, adaptive graphs, and evidence-driven state transitions: training as evidence-governed state transition across a heterogeneous computational graph.",
+  "repository": "mncs-learn",
+  "schema_version": "mncs.project-view/1",
+  "source_identity": "sha256:4bc0f99bac70f6b5535905f816e3eb025d9df81b38a4ef3458494da2bd0d2279",
+  "structure": {}
+}
