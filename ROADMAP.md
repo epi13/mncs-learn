@@ -1,5 +1,8 @@
 # Roadmap
 
+<!-- MNCS:generated:begin -->
+<!-- MNCS:generated:end -->
+
 This roadmap is ordered to keep `mncs-learn` machine-native rather than accidentally growing a permanent Python training framework.
 
 ## Phase 0 — Foundation (this merge)

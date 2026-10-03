@@ -1,5 +1,8 @@
 # mncs-learn
 
+<!-- MNCS:generated:begin -->
+<!-- MNCS:generated:end -->
+
 Machine-native learning orchestration for heterogeneous micro-models, adaptive graphs, and evidence-driven state transitions in the MNCS ecosystem.
 
 > **Core thesis:** training is not parameter optimization. Training is **evidence-governed state transition across a heterogeneous computational graph**.

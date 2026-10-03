@@ -1,0 +1,17 @@
+{
+  "schema_version": "mncs.project-intent/1",
+  "purpose": "Machine-native learning orchestration for heterogeneous micro-models, adaptive graphs, and evidence-driven state transitions: training as evidence-governed state transition across a heterogeneous computational graph.",
+  "entry": [
+    "python3 scripts/mncs_learn_check.py --result-file target/learn-check.json"
+  ],
+  "milestones": [
+    {
+      "id": "mncs-learn:projection-conformance",
+      "title": "Declared ambient projection surfaces satisfy their contract",
+      "subject_slot": "declarations",
+      "evidence": "projection-conformance",
+      "dependencies": [],
+      "blockers": []
+    }
+  ]
+}
